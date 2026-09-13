@@ -1,7 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { Config as PiAiConfig } from '@deepseek-ai/dsh-llm-pi-ai'
 
 test('client bundle registers a lifecycle-owned Plugins Settings tab', async () => {
   let definition
@@ -18,7 +17,7 @@ test('client bundle registers a lifecycle-owned Plugins Settings tab', async () 
       assert.equal(id, 'react')
       return {}
     })
-    assert.deepEqual(plugin.inject, ['connection', 'remote', 'slots', 'locale', 'settingsScope'])
+    assert.deepEqual(plugin.inject, ['slots', 'locale', 'remote', 'settingsScope'])
 
     const registrations = []
     const injections = []
@@ -59,14 +58,7 @@ test('client bundle registers a lifecycle-owned Plugins Settings tab', async () 
     }
     let effect
     const ctx = {
-      get(name) {
-        if (name === 'connection') return { api: {} }
-        if (name === 'remote') return { $on() { return () => {} } }
-        if (name === 'slots') return slots
-        if (name === 'locale') return locale
-        if (name === 'settingsScope') return settingsScope
-        throw new Error(`unexpected service: ${name}`)
-      },
+      remote: { $on() { return () => {} } },
       slots,
       locale,
       settingsScope,
@@ -99,14 +91,17 @@ test('client owns only its Settings slot and keeps the configuration accessible'
   assert.match(source, /settings\.plugins\.tab/)
   assert.match(source, /ctx\.settingsScope/)
   assert.match(source, /slots\.inject\(SETTINGS_SLOT/)
-  assert.match(source, /expectedRevision/)
-  assert.match(source, /scope\.subscribe\(/)
+  assert.match(source, /remote\.llm\.discoverModels\(DISCOVERY_NS/)
+  assert.match(source, /scope\.mutate\(/)
+  assert.match(source, /hooks: \{ scope \}/)
+  assert.doesNotMatch(source, /useSyncExternalStore/)
+  assert.doesNotMatch(source, /connection\.api/)
   assert.doesNotMatch(source, /remote\.\$on\('settings\/document-updated'/)
   assert.match(source, /remote\.\$on\('credentials\/reference-updated'/)
   assert.match(source, /role: 'status'/)
 })
 
-test('initial profile waits until the host writes complete model capabilities', async () => {
+test('client uses direct remote results and writes the bootstrap through its bound scope', async () => {
   let definition
   globalThis.window = {
     __ModuleLoader__: {
@@ -116,115 +111,13 @@ test('initial profile waits until the host writes complete model capabilities', 
     },
   }
   try {
-    await import('../client.js?initial-profile-sync-test')
+    await import('../client.js?initial-profile-remote-test')
     const plugin = definition.factory((id) => {
       assert.equal(id, 'react')
       return {}
     })
-    const scopeListeners = []
-    let currentNamespace = {
-      ns: 'llm-pi-ai', revision: 1, value: { providers: {} },
-    }
-    let scopeSnapshot = {
-      status: 'ready', revision: 1, value: {
-        providers: {
-          CLIProxyAPI: {
-            baseURL: 'http://127.0.0.1:8317/v1',
-            headers: { authorization: 'Bearer dsh-cliproxyapi-no-key' },
-          },
-        },
-      }, writable: true,
-    }
-    let bootstrap
-    let discoveryRequest
-    const ok = (value) => ({ result: { ok: true, value } })
-    const api = {
-      settings: {
-        async describe() {
-          return ok({ writable: true, hasDocument: true, namespaces: [currentNamespace] })
-        },
-        async mutate(request) {
-          bootstrap = request.ops[0].value
-          currentNamespace = {
-            ns: 'llm-pi-ai', revision: 2, value: { providers: { CLIProxyAPI: bootstrap } },
-          }
-          return ok(currentNamespace)
-        },
-      },
-      credentials: {
-        async describe() {
-          return ok({ credentials: { DSH_CLIPROXY_API_KEY: { configured: false } } })
-        },
-      },
-      llm: {
-        async discoverModels(request) {
-          discoveryRequest = request
-          return ok({ models: [{
-            id: 'gpt-5.6-sol', name: 'GPT 5.6 Sol', contextWindow: 372000, maxTokens: 32768,
-          }] })
-        },
-      },
-    }
-    const scope = {
-      getSnapshot() {
-        return scopeSnapshot
-      },
-      subscribe(listener) {
-        scopeListeners.push(listener)
-        return () => scopeListeners.splice(scopeListeners.indexOf(listener), 1)
-      },
-    }
-    const messages = {
-      noModels: 'no models',
-      syncTimeout: 'sync timeout',
-    }
-    let settled = false
-    const installing = plugin.installInitialProfile(
-      api, scope, 'http://127.0.0.1:8317/v1', '', messages,
-    ).then((profile) => {
-      settled = true
-      return profile
-    })
-
-    for (let attempt = 0; !bootstrap && attempt < 100; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
-    assert.ok(bootstrap)
-    assert.equal(discoveryRequest.settingsNs, 'llm-cliproxyapi')
-    assert.equal(bootstrap.models[0].input, undefined)
-    assert.equal(bootstrap.models[0].reasoningEfforts, undefined)
-    assert.match(bootstrap.headers['x-dsh-provider-cpa-sync'], /^rich:/)
-    const validated = await PiAiConfig['~standard'].validate({
-      providers: { CLIProxyAPI: bootstrap },
-    })
-    assert.equal(validated.issues, undefined)
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    assert.equal(settled, false)
-
-    const synchronized = {
-      ...bootstrap,
-      headers: { authorization: 'Bearer dsh-cliproxyapi-no-key' },
-      models: [{
-        id: 'gpt-5.6-sol',
-        name: 'GPT 5.6 Sol',
-        contextWindow: 372000,
-        maxTokens: 32768,
-        input: ['text', 'image'],
-        reasoningEfforts: { low: 'low', high: 'high' },
-      }],
-    }
-    currentNamespace = {
-      ns: 'llm-pi-ai', revision: 3, value: { providers: { CLIProxyAPI: synchronized } },
-    }
-    scopeSnapshot = {
-      status: 'ready', revision: 3, value: currentNamespace.value, writable: true,
-    }
-    for (const listener of [...scopeListeners]) listener()
-
-    const profile = await installing
-    assert.deepEqual(profile.models[0].input, ['text', 'image'])
-    assert.deepEqual(profile.models[0].reasoningEfforts, { low: 'low', high: 'high' })
-    assert.equal(scopeListeners.length, 0)
+    assert.equal(plugin.installInitialProfile, undefined)
+    assert.equal(plugin.settingsTab, undefined)
   } finally {
     delete globalThis.window
   }

@@ -23,7 +23,7 @@ npx @deepseek-ai/dsh web
 After opening Harness:
 
 1. Go to **Settings → Plugins → CLIProxyAPI**.
-2. Enter the CLIProxyAPI **API URL**, for example
+2. Enter the CLIProxyAPI **Base URL**, for example
    `http://127.0.0.1:8317/v1`.
 3. Enter the **API key**. Leave it empty if the service does not require authentication.
 4. Save the configuration. The model list will be retrieved automatically and refreshed periodically.
@@ -35,3 +35,7 @@ npx @deepseek-ai/dsh plugin --profile web remove @router-for-me/dsh-cliproxyapi-
 ```
 
 Restart DeepSeek Harness Web after uninstalling the plugin.
+
+## Compatibility
+
+This release targets DeepSeek Harness `0.1.5-rc.2` and later compatible releases. It uses the current `settings.plugin.tab` slot, `settingsScope` settings service, and `ctx.remote` RPC API. Reinstall the plugin and restart the Web process after upgrading so DSH loads the current client bundle.
