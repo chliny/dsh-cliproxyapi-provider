@@ -230,11 +230,9 @@ async function profileOf(profile, models, hasApiKey, config) {
     headers: profileHeadersOf(profile.headers, config.headers, hasApiKey),
     ...(hasApiKey ? { apiKeyEnv: API_KEY_REF } : {}),
   }
-  const validated = await PiAiConfig['~standard'].validate({ providers: { [PROVIDER]: candidate } })
-  if (validated.issues?.length) {
-    throw new Error(`llm-pi-ai rejected the generated provider profile: ${validated.issues[0].message}`)
-  }
-  return validated.value.providers[PROVIDER]
+  // providers is volatile in DSH 0.2: the Standard Schema view omits it.
+  // The callable schema validates the entry and keeps its resolved value.
+  return PiAiConfig({ providers: { [PROVIDER]: candidate } }).providers.get()[PROVIDER]
 }
 
 function retryDelay(config, failures) {
@@ -260,6 +258,11 @@ export function apply(ctx, config) {
     headers: catalogHeadersOf(profile.headers, activeConfig.headers),
     fetchTimeoutMs: activeConfig.fetchTimeoutMs,
   }, undefined, signal)
+
+  // DSH 0.2 stores pi-ai providers in the loader entry's volatile form,
+  // exposed by settings.describe(), rather than a settings.get() section.
+  const currentProfile = () => ctx.settings.describe()
+    .find((entry) => entry.ns === PI_NS)?.value?.providers?.[PROVIDER]
 
   const discoveryHandoffs = new Map()
 
@@ -303,7 +306,7 @@ export function apply(ctx, config) {
 
   const synchronize = async (signal, authOnly = false) => {
     const activeConfig = currentConfig()
-    const profile = ctx.settings?.get(PI_NS)?.providers?.[PROVIDER]
+    const profile = currentProfile()
     if (!profile) return false
     if (authOnly && profileSynchronizationPending(profile)) return true
     if (signal.aborted) throw signal.reason
@@ -402,14 +405,14 @@ export function apply(ctx, config) {
   }
 
   const scheduleFromSettings = (force = false) => {
-    const profile = ctx.settings?.get(PI_NS)?.providers?.[PROVIDER]
+    const profile = currentProfile()
     const refreshKey = refreshKeyOf(profile, currentConfig())
     if (!force && refreshKey === observedRefreshKey) return
     observedRefreshKey = refreshKey
     schedule()
   }
 
-  ctx.on('settings/updated', (ns) => {
+  ctx.on('settings/document-updated', (ns) => {
     if (ns === PI_NS) scheduleFromSettings()
   })
   ctx.on('credentials/reference-updated', (ref) => {
