@@ -120,9 +120,14 @@ test('saving uses the CLIProxyAPI discovery instead of the pi-ai generic listing
   globalThis.window = { __ModuleLoader__: { load(value) { definition = value } } }
   try {
     await import('../client.js?catalog-discovery-test')
+    const states = []
     const React = {
       createElement(type, props, ...children) { return { type, props: props || {}, children } },
-      useState(initial) { return [initial, () => {}] },
+      useState(initial) {
+        const index = states.length
+        states.push(initial)
+        return [initial, (value) => { states[index] = value }]
+      },
       useEffect() {},
     }
     const plugin = definition.factory((id) => {
@@ -130,9 +135,24 @@ test('saving uses the CLIProxyAPI discovery instead of the pi-ai generic listing
       return React
     })
     let component
+    const listeners = new Set()
     const scope = {
       mutations: [],
-      async mutate(ops) { this.mutations.push(...ops) },
+      snapshot: { status: 'ready', revision: 1, writable: true, value: {} },
+      getSnapshot() { return this.snapshot },
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+      publish(profile) {
+        this.snapshot = {
+          ...this.snapshot, revision: this.snapshot.revision + 1,
+          value: { providers: { CLIProxyAPI: profile } },
+        }
+        for (const listener of listeners) listener()
+      },
+      async mutate(ops) {
+        this.mutations.push(...ops)
+        this.publish(ops[0].value)
+        return true
+      },
     }
     const remote = {
       llm: {
@@ -163,9 +183,20 @@ test('saving uses the CLIProxyAPI discovery instead of the pi-ai generic listing
     })
     const form = tree.children.find((child) => child?.type === 'form')
     assert.ok(form)
-    await form.props.onSubmit({ preventDefault() {} })
+    const submitted = form.props.onSubmit({ preventDefault() {} })
+    await new Promise((resolve) => setTimeout(resolve, 0))
     assert.equal(scope.mutations.length, 1)
     assert.equal(scope.mutations[0].value.headers['x-dsh-provider-cpa-sync'].startsWith('rich:'), true)
+    assert.equal(states[4].text, '')
+    assert.equal(listeners.size, 1)
+    scope.publish({
+      ...scope.mutations[0].value,
+      headers: {},
+      models: [{ id: 'thinking-model', name: 'Thinking Model', input: ['text', 'image'], reasoningEfforts: { high: 'high' } }],
+    })
+    await submitted
+    assert.equal(states[4].text, 'saved')
+    assert.equal(listeners.size, 0)
   } finally {
     delete globalThis.window
   }

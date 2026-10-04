@@ -17,6 +17,7 @@ window.__ModuleLoader__.load({
     const PROVIDER = 'CLIProxyAPI'
     const DEFAULT_BASE_URL = 'http://127.0.0.1:8317/v1'
     const PROFILE_SYNC_HEADER = 'x-dsh-provider-cpa-sync'
+    const PROFILE_SYNC_TIMEOUT_MS = 30000
     const PLACEHOLDER_AUTHORIZATION = 'Bearer dsh-cliproxyapi-no-key'
     const SETTINGS_SLOT = 'plugins.item'
     const SETTINGS_TAB_ID = 'cliproxyapi'
@@ -40,6 +41,8 @@ window.__ModuleLoader__.load({
         save: 'Save & Enable',
         saving: 'Saving…',
         saved: 'Saved. The CLIProxyAPI model catalog is synchronized.',
+        syncTimeout: 'The profile was saved, but its image and reasoning capabilities have not synchronized. Check the provider refresh logs and try again.',
+        saveFailed: 'Could not save the CLIProxyAPI profile. Reload settings and try again.',
         baseRequired: 'Base URL is required.',
         baseInvalid: 'Base URL must be a valid HTTP or HTTPS URL.',
         noModels: 'CLIProxyAPI returned no usable models.',
@@ -59,6 +62,8 @@ window.__ModuleLoader__.load({
         save: '保存并启用',
         saving: '保存中…',
         saved: '已保存，CLIProxyAPI 模型目录已同步。',
+        syncTimeout: '配置已保存，但图片与思考能力尚未同步。请检查供应商刷新日志后重试。',
+        saveFailed: '无法保存 CLIProxyAPI 配置。请重新加载设置后重试。',
         baseRequired: '请填写 Base URL。',
         baseInvalid: 'Base URL 必须是有效的 HTTP 或 HTTPS 地址。',
         noModels: 'CLIProxyAPI 未返回可用模型。',
@@ -124,6 +129,37 @@ window.__ModuleLoader__.load({
       }
     }
 
+    function syncValueOf(headers) {
+      const key = Object.keys(headers || {}).find((candidate) => candidate.toLowerCase() === PROFILE_SYNC_HEADER)
+      return key === undefined ? undefined : String(headers[key])
+    }
+
+    function waitForProfileSynchronization(scope, baseURL, previousRevision, messages) {
+      return new Promise((resolve, reject) => {
+        let finished = false
+        let dispose = () => {}
+        let timeout
+        const finish = (error) => {
+          if (finished) return
+          finished = true
+          clearTimeout(timeout)
+          dispose()
+          if (error) reject(error)
+          else resolve()
+        }
+        const inspect = () => {
+          const snapshot = scope.getSnapshot()
+          if (snapshot?.status !== 'ready') return
+          if (Number.isInteger(previousRevision) && (!Number.isInteger(snapshot.revision) || snapshot.revision <= previousRevision)) return
+          const profile = snapshot.value?.providers?.[PROVIDER]
+          if (profile?.baseURL === baseURL && syncValueOf(profile.headers) === undefined) finish()
+        }
+        dispose = scope.subscribe(inspect)
+        timeout = setTimeout(() => finish(new Error(messages.syncTimeout)), PROFILE_SYNC_TIMEOUT_MS)
+        inspect()
+      })
+    }
+
     async function credentialStatusOf(remote) {
       try {
         const response = await remote.credentials.describe([CREDENTIAL_REF])
@@ -150,11 +186,14 @@ window.__ModuleLoader__.load({
         const saved = await remote.credentials.set(CREDENTIAL_REF, apiKey)
         if (!saved.ok) throw new Error(saved.error.message)
       }
-      await scope.mutate([{
+      const previousRevision = scope.getSnapshot().revision
+      const saved = await scope.mutate([{
         op: 'set',
         path: ['providers', PROVIDER],
         value: bootstrapProfileOf(baseURL, discovery.value, Boolean(apiKey || configured), createSyncToken()),
       }])
+      if (!saved) throw new Error(messages.saveFailed)
+      await waitForProfileSynchronization(scope, baseURL, previousRevision, messages)
     }
 
     function SettingsTab({ scope, remote, t, view, useScope }) {
@@ -203,7 +242,11 @@ window.__ModuleLoader__.load({
             baseInvalid: t('baseInvalid'),
             noModels: t('noModels'),
           })
-          await installInitialProfile(remote, scope, nextBaseURL, nextApiKey, { noModels: t('noModels') })
+          await installInitialProfile(remote, scope, nextBaseURL, nextApiKey, {
+            noModels: t('noModels'),
+            saveFailed: t('saveFailed'),
+            syncTimeout: t('syncTimeout'),
+          })
           setApiKey('')
           setFeedback({ text: t('saved'), error: false })
         } catch (error) {
