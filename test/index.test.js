@@ -213,8 +213,9 @@ test('first profile synchronization restores capabilities stripped by the browse
       provider: 'CLIProxyAPI',
       baseURL: 'http://127.0.0.1:8317/v1',
     }, new AbortController().signal)
-    const bootstrapModels = discovered.map(({ id, name, contextWindow, maxTokens }) => ({
+    const bootstrapModels = discovered.map(({ id, name, contextWindow, maxTokens, inputModalities }) => ({
       id, name, contextWindow, maxTokens,
+      ...(inputModalities ? { input: [...inputModalities] } : {}),
     }))
     harness.setSection({ providers: {
       CLIProxyAPI: managedProfile({

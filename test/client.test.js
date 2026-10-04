@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
-test('client bundle registers a lifecycle-owned Plugins Settings tab', async () => {
+test('client bundle registers a served-namespace Plugins item', async () => {
   let definition
   globalThis.window = {
     __ModuleLoader__: {
@@ -17,7 +17,7 @@ test('client bundle registers a lifecycle-owned Plugins Settings tab', async () 
       assert.equal(id, 'react')
       return {}
     })
-    assert.deepEqual(plugin.inject, ['slots', 'locale', 'remote', 'settingsScope'])
+    assert.deepEqual(plugin.inject, ['slots', 'locale', 'remote', 'remote.llm', 'remote.credentials', 'configForms'])
 
     const registrations = []
     const injections = []
@@ -33,13 +33,13 @@ test('client bundle registers a lifecycle-owned Plugins Settings tab', async () 
     }
     const locale = {
       register(namespace, dictionaries) {
-        assert.equal(namespace, 'settings.cliProxyApi')
+        assert.ok(['settings.cliProxyApi', 'llm-cliproxyapi'].includes(namespace))
         assert.deepEqual(Object.keys(dictionaries).sort(), ['en', 'zh'])
         return () => {}
       },
       bind(namespace) {
-        assert.equal(namespace, 'settings.cliProxyApi')
-        return (key) => key
+        assert.ok(['settings.cliProxyApi', 'llm-cliproxyapi'].includes(namespace))
+        return (key) => key === 'description' ? namespace : key
       },
     }
     const scope = {
@@ -50,48 +50,62 @@ test('client bundle registers a lifecycle-owned Plugins Settings tab', async () 
         return () => {}
       },
     }
-    const settingsScope = {
-      bind(spec) {
-        assert.deepEqual(spec, { namespace: 'llm-pi-ai' })
+    const configForms = {
+      get(namespace) {
+        assert.equal(namespace, 'llm-pi-ai')
         return scope
       },
+      whileServed(namespaces, register) {
+        assert.deepEqual(namespaces, ['llm-pi-ai'])
+        return register(new Set(namespaces))
+      },
     }
-    let effect
     const ctx = {
       remote: { $on() { return () => {} } },
       slots,
       locale,
-      settingsScope,
+      configForms,
       effect(factory) {
-        effect = factory
-        return () => {}
+        return factory()
       },
     }
     plugin.apply(ctx)
-    assert.equal(typeof effect, 'function')
-    assert.deepEqual(injections, ['settings.plugins.tab'])
+    assert.deepEqual(injections, ['plugins.item'])
     assert.equal(registrations.length, 1)
-    assert.equal(registrations[0].options.name, 'settings.plugins.tab')
+    assert.equal(registrations[0].options.name, 'plugins.item')
     assert.equal(registrations[0].options.id, 'cliproxyapi')
     assert.equal(registrations[0].options.order, 30)
+    assert.equal(typeof registrations[0].options.label, 'function')
+    assert.equal(typeof registrations[0].options.description, 'function')
+    assert.equal(registrations[0].options.description(), 'llm-cliproxyapi')
     assert.equal(typeof registrations[0].options.inject, 'function')
     assert.equal(typeof registrations[0].component, 'function')
+    assert.deepEqual(registrations[0].options.inject().hooks, { scope })
   } finally {
     delete globalThis.window
   }
 })
 
-test('client owns only its Settings slot and keeps the configuration accessible', async () => {
+test('client follows the served pi-ai entry on the Plugins page', async () => {
   const source = await readFile(new URL('../client.js', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /setInterval\s*\(/)
   assert.doesNotMatch(source, /document\./)
   assert.doesNotMatch(source, /MutationObserver/)
   assert.doesNotMatch(source, /querySelector(All)?\s*\(/)
   assert.doesNotMatch(source, /modelsHeading|configuredRows|BOOTSTRAP_ATTRIBUTE|HIDDEN_ATTRIBUTE/)
-  assert.match(source, /settings\.plugins\.tab/)
-  assert.match(source, /ctx\.settingsScope/)
+  assert.match(source, /plugins\.item/)
+  assert.match(source, /SETTINGS_SUMMARY_NS/)
+  assert.match(source, /ctx\.configForms/)
+  assert.match(source, /configForms\.whileServed/)
   assert.match(source, /slots\.inject\(SETTINGS_SLOT/)
+  assert.match(source, /const DISCOVERY_NS = 'llm-cliproxyapi'/)
   assert.match(source, /remote\.llm\.discoverModels\(DISCOVERY_NS/)
+  assert.match(source, /const inject = \['slots', 'locale', 'remote', 'remote\.llm', 'remote\.credentials', 'configForms'\]/)
+  assert.match(source, /label-inverse, #fff/)
+  assert.match(source, /fontWeight: 600/)
+  assert.match(source, /input: Array\.isArray\(model\.inputModalities\)[\s\S]*\? \[\.\.\.model\.inputModalities\][\s\S]*: \['text'\]/)
+  assert.match(source, /imageCapability: '会根据模型目录中的图片能力声明自动启用图片输入。'/)
+  assert.match(source, /role: 'note' }, t\('imageCapability'\)/)
   assert.match(source, /scope\.mutate\(/)
   assert.match(source, /hooks: \{ scope \}/)
   assert.doesNotMatch(source, /useSyncExternalStore/)
@@ -99,6 +113,62 @@ test('client owns only its Settings slot and keeps the configuration accessible'
   assert.doesNotMatch(source, /remote\.\$on\('settings\/document-updated'/)
   assert.match(source, /remote\.\$on\('credentials\/reference-updated'/)
   assert.match(source, /role: 'status'/)
+})
+
+test('saving uses the CLIProxyAPI discovery instead of the pi-ai generic listing', async () => {
+  let definition
+  globalThis.window = { __ModuleLoader__: { load(value) { definition = value } } }
+  try {
+    await import('../client.js?catalog-discovery-test')
+    const React = {
+      createElement(type, props, ...children) { return { type, props: props || {}, children } },
+      useState(initial) { return [initial, () => {}] },
+      useEffect() {},
+    }
+    const plugin = definition.factory((id) => {
+      assert.equal(id, 'react')
+      return React
+    })
+    let component
+    const scope = {
+      mutations: [],
+      async mutate(ops) { this.mutations.push(...ops) },
+    }
+    const remote = {
+      llm: {
+        async discoverModels(namespace, request) {
+          assert.equal(namespace, 'llm-cliproxyapi')
+          assert.equal(request.api, 'openai-responses')
+          return { ok: true, value: [{ id: 'thinking-model', name: 'Thinking Model' }] }
+        },
+      },
+      credentials: { async describe() { return { ok: true, value: {} } } },
+    }
+    plugin.apply({
+      remote,
+      configForms: {
+        get() { return scope },
+        whileServed(_namespaces, register) { return register() },
+      },
+      locale: { bind() { return (key) => key }, register() { return () => {} } },
+      slots: {
+        inject(_name, register) { return register() },
+        register(_options, view) { component = view; return () => {} },
+      },
+      effect(factory) { return factory() },
+    })
+    const tree = component({
+      scope, remote, t: (key) => key,
+      useScope: () => ({ status: 'ready', writable: true, value: {} }),
+    })
+    const form = tree.children.find((child) => child?.type === 'form')
+    assert.ok(form)
+    await form.props.onSubmit({ preventDefault() {} })
+    assert.equal(scope.mutations.length, 1)
+    assert.equal(scope.mutations[0].value.headers['x-dsh-provider-cpa-sync'].startsWith('rich:'), true)
+  } finally {
+    delete globalThis.window
+  }
 })
 
 test('client uses direct remote results and writes the bootstrap through its bound scope', async () => {
