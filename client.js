@@ -9,22 +9,26 @@ window.__ModuleLoader__.load({
     const { useEffect, useState } = React
 
     const PI_NS = 'llm-pi-ai'
+    // The built-in pi-ai discovery cannot parse CLIProxyAPI's Codex models array.
+    // Use our own catalog discovery; the server synchronizes its rich capabilities
+    // (including reasoningEfforts) after the browser saves the bootstrap profile.
     const DISCOVERY_NS = 'llm-cliproxyapi'
     const CREDENTIAL_REF = 'DSH_CLIPROXY_API_KEY'
     const PROVIDER = 'CLIProxyAPI'
     const DEFAULT_BASE_URL = 'http://127.0.0.1:8317/v1'
     const PROFILE_SYNC_HEADER = 'x-dsh-provider-cpa-sync'
     const PLACEHOLDER_AUTHORIZATION = 'Bearer dsh-cliproxyapi-no-key'
-    const SETTINGS_SLOT = 'settings.plugins.tab'
+    const SETTINGS_SLOT = 'plugins.item'
     const SETTINGS_TAB_ID = 'cliproxyapi'
     const SETTINGS_LOCALE_NS = 'settings.cliProxyApi'
-    const inject = ['slots', 'locale', 'remote', 'settingsScope']
+    const SETTINGS_SUMMARY_NS = 'llm-cliproxyapi'
+    const inject = ['slots', 'locale', 'remote', 'remote.llm', 'remote.credentials', 'configForms']
 
     const copy = {
       en: {
         tab: 'CLIProxyAPI',
-        title: 'CLIProxyAPI',
         intro: 'Connect a CLIProxyAPI server and import its model catalog.',
+        imageCapability: 'Image input is enabled automatically for models that advertise image support.',
         loading: 'Loading CLIProxyAPI settings…',
         unavailable: 'CLIProxyAPI settings are unavailable in this Web profile.',
         readOnly: 'Settings are read-only for this connection.',
@@ -42,8 +46,8 @@ window.__ModuleLoader__.load({
       },
       zh: {
         tab: 'CLIProxyAPI',
-        title: 'CLIProxyAPI',
         intro: '连接 CLIProxyAPI 服务并导入其模型目录。',
+        imageCapability: '会根据模型目录中的图片能力声明自动启用图片输入。',
         loading: '正在读取 CLIProxyAPI 设置…',
         unavailable: '当前 Web 配置中无法访问 CLIProxyAPI 设置。',
         readOnly: '当前连接的设置为只读。',
@@ -75,8 +79,8 @@ window.__ModuleLoader__.load({
       status: { margin: 0, color: 'var(--dsw-alias-label-secondary)', fontSize: '13px', lineHeight: 1.4 },
       statusError: { margin: 0, color: 'var(--dsw-alias-status-danger)', fontSize: '13px', lineHeight: 1.4 },
       actions: { display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '4px' },
-      button: { cursor: 'pointer', minHeight: '38px', border: '1px solid transparent', borderRadius: '10px', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsw-alias-label-inverse)', padding: '8px 14px', font: 'inherit' },
-      buttonDisabled: { cursor: 'default', opacity: 0.55 },
+      button: { cursor: 'pointer', minHeight: '38px', border: '1px solid transparent', borderRadius: '10px', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsw-alias-label-inverse, #fff)', padding: '8px 14px', font: 'inherit', fontWeight: 600 },
+      buttonDisabled: { cursor: 'default', opacity: 0.75 },
     }
 
     function validBaseURL(value, messages) {
@@ -105,6 +109,9 @@ window.__ModuleLoader__.load({
           name: model.name || model.id,
           contextWindow: model.contextWindow || 262144,
           maxTokens: model.maxTokens || 32768,
+          input: Array.isArray(model.inputModalities) && model.inputModalities.length
+            ? [...model.inputModalities]
+            : ['text'],
         })),
         defaultContextWindow: 262144,
         defaultMaxTokens: 32768,
@@ -150,7 +157,8 @@ window.__ModuleLoader__.load({
       }])
     }
 
-    function SettingsTab({ scope, remote, t, useScope }) {
+    function SettingsTab({ scope, remote, t, view, useScope }) {
+      if (view === 'summary') return 'CLIProxyAPI model gateway'
       const snapshot = useScope((value) => value)
       const profile = snapshot?.value?.providers?.[PROVIDER]
       const [baseURL, setBaseURL] = useState(DEFAULT_BASE_URL)
@@ -216,6 +224,7 @@ window.__ModuleLoader__.load({
         readOnly ? React.createElement('p', { style: styles.status, role: 'status' }, t('readOnly')) : null,
         snapshot?.status === 'loading' ? React.createElement('p', { style: styles.status, role: 'status' }, t('loading')) : null,
         React.createElement('form', { style: styles.form, onSubmit: submit, noValidate: true },
+          React.createElement('p', { style: styles.status, role: 'note' }, t('imageCapability')),
           React.createElement('label', { style: styles.field },
             React.createElement('span', { style: styles.label }, t('baseURL')),
             React.createElement('input', { style: styles.input, type: 'url', value: baseURL, autoComplete: 'url', disabled: !canSave, onChange: (event) => setBaseURL(event.currentTarget.value) }),
@@ -239,23 +248,30 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       const remote = ctx.remote
       const locale = ctx.locale
-      const scope = ctx.settingsScope.bind({ namespace: PI_NS })
+      const configForms = ctx.configForms
+      const scope = configForms.get(PI_NS)
       const t = locale.bind(SETTINGS_LOCALE_NS)
+      const pluginT = locale.bind(SETTINGS_SUMMARY_NS)
 
       ctx.effect(() => locale.register(SETTINGS_LOCALE_NS, copy), 'dsh-provider-cpa: dictionaries')
-      ctx.slots.inject(SETTINGS_SLOT, () => ctx.slots.register({
+      ctx.effect(() => locale.register(SETTINGS_SUMMARY_NS, {
+        en: { title: 'CLIProxyAPI', description: 'Connect to a CLIProxyAPI model gateway.' },
+        zh: { title: 'CLIProxyAPI', description: '连接 CLIProxyAPI 模型网关。' },
+      }), 'dsh-provider-cpa: Plugins page copy')
+      ctx.effect(() => configForms.whileServed([PI_NS], () => ctx.slots.inject(SETTINGS_SLOT, () => ctx.slots.register({
         name: SETTINGS_SLOT,
         id: SETTINGS_TAB_ID,
         order: 30,
-        label: () => t('tab'),
-        locale: SETTINGS_LOCALE_NS,
+        label: () => pluginT('title'),
+        description: () => pluginT('description'),
+        locale: SETTINGS_SUMMARY_NS,
         inject: () => ({
           remote,
           scope,
           t,
           hooks: { scope },
         }),
-      }, SettingsTab))
+      }, SettingsTab))), 'dsh-provider-cpa: settings page')
     }
 
     exports.apply = apply
